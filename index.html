@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
   <title>NO1 Office — Department of Narrative Operations</title>
 
   <!-- Search indexing and canonical identity -->
@@ -51,6 +54,7 @@
   <style>
     :root {
       color-scheme: light;
+      --office-font:'Courier Prime','Courier New',Courier,monospace;
       --paper:#f4f2ec;
       --ink:#202723;
       --muted:#6a716b;
@@ -152,6 +156,12 @@
       .mode-buttons { width:100%; }
       .mode-buttons button { flex:1; }
       .dialogue { padding:17px; }
+    }
+    /* Apply the requested typeface even where older rules use font shorthands. */
+    body, body * { font-family:var(--office-font) !important; }
+    @media (max-width:600px) {
+      /* Longer monospace headings should not overflow narrow screens. */
+      h1 { font-size:clamp(40px, 9vw, 54px); }
     }
   </style>
 </head>
@@ -335,6 +345,122 @@
       }
       off.addEventListener('click', () => setDisguise(false));
       on.addEventListener('click', () => setDisguise(true));
+    })();
+  </script>
+  <script>
+    // OFF1 interference is presentation-only: all source strings are restored.
+    (() => {
+      const INTERVAL_MS = 3000;
+      const STEP_MS = 100;
+      const CHANCE = 0.10;
+      const PHASES = INTERVAL_MS / STEP_MS;
+      const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#%&?';
+      const blocked = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'OPTION', 'SELECT']);
+      const records = new WeakMap();
+      const buckets = Array.from({ length: PHASES }, () => []);
+      const activeRecords = new Set();
+      let phase = 0;
+
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      function replacementFor(original) {
+        let replacement;
+        do {
+          replacement = GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
+        } while (replacement === original);
+        return replacement;
+      }
+
+      function visible(node) {
+        const parent = node.parentElement;
+        return parent && !parent.closest('[hidden], [aria-hidden="true"]') &&
+          parent.getClientRects().length > 0;
+      }
+
+      function draw(record) {
+        const next = record.glyphs.map((glyph, index) => record.active.get(index)?.glyph ?? glyph).join('');
+        if (next !== record.rendered) {
+          record.rendered = next;
+          record.node.nodeValue = next;
+        }
+      }
+
+      function sync(record) {
+        if (record.node.nodeValue === record.rendered) return true;
+        // Another script updated this text. Do not restore stale content over it.
+        record.active.clear();
+        activeRecords.delete(record);
+        record.glyphs = Array.from(record.node.nodeValue);
+        record.rendered = record.node.nodeValue;
+        return false;
+      }
+
+      function discover() {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          if (!node.nodeValue.trim() || records.has(node)) continue;
+          const parent = node.parentElement;
+          if (!parent || blocked.has(parent.tagName) || parent.closest('[contenteditable="true"]')) continue;
+          const record = {
+            node,
+            glyphs: Array.from(node.nodeValue),
+            rendered: node.nodeValue,
+            active: new Map()
+          };
+          records.set(node, record);
+          record.glyphs.forEach((glyph, index) => {
+            if (!/\S/u.test(glyph)) return;
+            buckets[Math.floor(Math.random() * PHASES)].push({ record, index });
+          });
+        }
+      }
+
+      function tick() {
+        const now = performance.now();
+        const selecting = Boolean(window.getSelection()?.toString());
+        for (const record of activeRecords) {
+          if (!record.node.isConnected || !sync(record)) {
+            activeRecords.delete(record);
+            continue;
+          }
+          for (const [index, entry] of record.active) {
+            if (selecting || entry.expires <= now) record.active.delete(index);
+          }
+          draw(record);
+          if (!record.active.size) activeRecords.delete(record);
+        }
+
+        if (!document.hidden && !selecting) {
+          const changed = new Set();
+          for (const { record, index } of buckets[phase]) {
+            if (!record.node.isConnected || !visible(record.node) || !sync(record)) continue;
+            const original = record.glyphs[index];
+            if (!original || !/\S/u.test(original) || Math.random() >= CHANCE) continue;
+            record.active.set(index, {
+              glyph: replacementFor(original),
+              expires: now + 100 + Math.random() * 250
+            });
+            changed.add(record);
+          }
+          for (const record of changed) {
+            draw(record);
+            activeRecords.add(record);
+          }
+        }
+
+        phase = (phase + 1) % PHASES;
+        if (phase === 0) {
+          // Catch text nodes inserted by the existing disguise-mode toggle.
+          discover();
+          for (let index = 0; index < PHASES; index++) {
+            buckets[index] = buckets[index].filter(({ record }) => record.node.isConnected);
+          }
+        }
+      }
+
+      discover();
+      setInterval(tick, STEP_MS);
     })();
   </script>
 </body>
